@@ -61,30 +61,30 @@ func toUser(inUser interface{}) User {
 func SelectMessages(in, out chan interface{}) {
 	wg := &sync.WaitGroup{}
 	userBatch := make([]User, GetMessagesMaxUsersBatch)
-	var msgs []MsgID
 	cnt := 0
 	for user := range in {
 		userBatch[cnt] = toUser(user)
-		if cnt == 1 {
-			userBatchCpy := userBatch
+		cnt++
+		if cnt == 2 {
+			userBatchCpy := make([]User, GetMessagesMaxUsersBatch)
+			copy(userBatchCpy, userBatch)
 			wg.Add(1)
 			go func() {
-				msgBatch, err := GetMessages(userBatchCpy[0], userBatchCpy[1])
+				msgBatch, err := GetMessages(userBatchCpy...)
 				if err != nil {
 					fmt.Println("too many users")
 				}
 				for _, v := range msgBatch {
-					msgs = append(msgs, v)
+					out <- v
 				}
 				wg.Done()
 			}()
 			cnt = 0
-		} else {
-			cnt++
 		}
 	}
 	if cnt == 1 {
-		userBatchCpy := userBatch
+		userBatchCpy := make([]User, GetMessagesMaxUsersBatch)
+		copy(userBatchCpy, userBatch)
 		wg.Add(1)
 		go func() {
 			msgBatch, err := GetMessages(userBatchCpy[0])
@@ -92,15 +92,12 @@ func SelectMessages(in, out chan interface{}) {
 				fmt.Println("too many users")
 			}
 			for _, v := range msgBatch {
-				msgs = append(msgs, v)
+				out <- v
 			}
 			wg.Done()
 		}()
 	}
 	wg.Wait()
-	for _, v := range msgs {
-		out <- v
-	}
 }
 
 func CheckSpam(in, out chan interface{}) {
