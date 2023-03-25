@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"sync"
 )
 
@@ -26,6 +25,22 @@ func RunPipeline(cmds ...cmd) {
 	wg.Wait()
 }
 
+func toString(i interface{}) string {
+	res, ok := i.(string)
+	if !ok {
+		panic("cannot convert to string")
+	}
+	return res
+}
+
+func toUint64(i interface{}) uint64 {
+	res, ok := i.(uint64)
+	if !ok {
+		panic("cannot convert to uint64")
+	}
+	return res
+}
+
 func SelectUsers(in, out chan interface{}) {
 	wg := &sync.WaitGroup{}
 	var userMap sync.Map
@@ -35,27 +50,38 @@ func SelectUsers(in, out chan interface{}) {
 			user := GetUser(email)
 			userMap.Store(user.ID, user.Email)
 			wg.Done()
-		}(i.(string))
+		}(toString(i))
 	}
 	wg.Wait()
 
-	var outUsers []User
 	userMap.Range(func(k, v interface{}) bool {
-		outUsers = append(outUsers, User{ID: k.(uint64), Email: v.(string)})
+		out <- User{ID: toUint64(k), Email: toString(v)}
 		return true
 	})
-
-	for _, v := range outUsers {
-		out <- v
-	}
 }
 
 func toUser(inUser interface{}) User {
 	outUser, ok := inUser.(User)
 	if !ok {
-		fmt.Println("entity is not a User type")
+		panic("entity is not a User type")
 	}
 	return outUser
+}
+
+func getMsgBatch(userBatch []User, wg *sync.WaitGroup, cnt int, out chan interface{}) {
+	userBatchCpy := make([]User, GetMessagesMaxUsersBatch)
+	copy(userBatchCpy, userBatch)
+	wg.Add(1)
+	go func() {
+		msgBatch, err := GetMessages(userBatchCpy[:cnt]...)
+		if err != nil {
+			panic("too many users")
+		}
+		for _, v := range msgBatch {
+			out <- v
+		}
+		wg.Done()
+	}()
 }
 
 func SelectMessages(in, out chan interface{}) {
@@ -65,39 +91,23 @@ func SelectMessages(in, out chan interface{}) {
 	for user := range in {
 		userBatch[cnt] = toUser(user)
 		cnt++
-		if cnt == 2 {
-			userBatchCpy := make([]User, GetMessagesMaxUsersBatch)
-			copy(userBatchCpy, userBatch)
-			wg.Add(1)
-			go func() {
-				msgBatch, err := GetMessages(userBatchCpy...)
-				if err != nil {
-					fmt.Println("too many users")
-				}
-				for _, v := range msgBatch {
-					out <- v
-				}
-				wg.Done()
-			}()
+		if cnt == GetMessagesMaxUsersBatch {
+			getMsgBatch(userBatch, wg, GetMessagesMaxUsersBatch, out)
 			cnt = 0
 		}
 	}
-	if cnt == 1 {
-		userBatchCpy := make([]User, GetMessagesMaxUsersBatch)
-		copy(userBatchCpy, userBatch)
-		wg.Add(1)
-		go func() {
-			msgBatch, err := GetMessages(userBatchCpy[0])
-			if err != nil {
-				fmt.Println("too many users")
-			}
-			for _, v := range msgBatch {
-				out <- v
-			}
-			wg.Done()
-		}()
+	if cnt != 0 {
+		getMsgBatch(userBatch, wg, cnt, out)
 	}
 	wg.Wait()
+}
+
+func toMsgID(msgID interface{}) MsgID {
+	outMsg, ok := msgID.(MsgID)
+	if !ok {
+		panic("cannot convert to MsgID")
+	}
+	return outMsg
 }
 
 func CheckSpam(in, out chan interface{}) {
@@ -110,33 +120,35 @@ func CheckSpam(in, out chan interface{}) {
 			flag, err := HasSpam(msgID)
 			<-guard
 			if err != nil {
-				fmt.Println("cannot convert to MsgID")
+				panic("cannot convert to MsgID")
 			}
 			out <- MsgData{msgID, flag}
 			wg.Done()
-		}(msgID.(MsgID))
+		}(toMsgID(msgID))
 	}
 	wg.Wait()
 }
 
-func IDToInt(id MsgID) uint64 {
-	return uint64(id)
+func toMsgData(msgData interface{}) MsgData {
+	outMsgData, ok := msgData.(MsgData)
+	if !ok {
+		panic("cannot convert to MsgData")
+	}
+	return outMsgData
 }
 
 func CombineResults(in, out chan interface{}) {
 	var msgs []MsgData
 	for msgData := range in {
-		msgs = append(msgs, msgData.(MsgData))
+		msgs = append(msgs, toMsgData(msgData))
 	}
 	sort.Slice(msgs, func(i, j int) bool {
 		if msgs[i].HasSpam == msgs[j].HasSpam {
 			return msgs[i].ID < msgs[j].ID
-		} else {
-			return msgs[i].HasSpam
 		}
+		return msgs[i].HasSpam
 	})
 	for _, msg := range msgs {
-		str := strconv.FormatBool(msg.HasSpam) + " " + strconv.FormatUint(IDToInt(msg.ID), 10)
-		out <- str
+		out <- fmt.Sprintf("%t %v", msg.HasSpam, uint64(msg.ID))
 	}
 }
